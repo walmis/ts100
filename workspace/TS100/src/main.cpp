@@ -36,6 +36,8 @@ void startPIDTask(void const *argument);
 void startMOVTask(void const *argument);
 // End FreeRTOS
 
+extern "C" void cdc_init_usbd(void);
+
 // Main sets up the hardware then hands over to the FreeRTOS kernel
 int main(void) {
 	/* Reset of all peripherals, Initializes the Flash interface and the Systick.
@@ -44,6 +46,10 @@ int main(void) {
 	Setup_HAL();  // Setup all the HAL objects
 	HAL_IWDG_Refresh(&hiwdg);
 	setTipPWM(0);
+	
+	cdc_init_usbd();
+
+	
 	lcd.initialize();   // start up the LCD
 	lcd.setFont(0);     // default to bigger font
 	//Testing for new weird board version

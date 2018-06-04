@@ -9,6 +9,7 @@ SOURCE := $(shell find . -type f -name '*.c')
 SOURCE_CPP := $(shell find . -type f -name '*.cpp')
 SOURCES := $(shell find . -type f -name '*.c*')
 S_SRCS := $(shell find . -type f -name '*.s') 
+ASM_SRCS := $(shell find . -type f -name '*.S')
 
 APP_INC_DIR = ./inc
 CMSIS_DEVICE_INC_DIR = ./CMSIS/device
@@ -17,6 +18,7 @@ HAL_INC_DIR = ./HAL_Driver/Inc
 FRTOS_CMIS_INC_DIR = ./Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS
 FRTOS_INC_DIR = ./Middlewares/Third_Party/FreeRTOS/Source/include
 FRTOS_GCC_INC_DIR = ./Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM3
+USB_INC_DIR = ./Middlewares/Third_Party/libusb_stm32/inc
 
 INCLUDES = -I$(APP_INC_DIR)	\
 	-I$(CMSIS_DEVICE_INC_DIR)\
@@ -24,7 +26,8 @@ INCLUDES = -I$(APP_INC_DIR)	\
 	-I$(HAL_INC_DIR)	\
 	-I$(FRTOS_CMIS_INC_DIR)	\
 	-I$(FRTOS_INC_DIR)	\
-	-I$(FRTOS_GCC_INC_DIR)
+	-I$(FRTOS_GCC_INC_DIR) \
+	-I$(USB_INC_DIR)
 # output folder
 HEXFILE_DIR=Hexfile
 
@@ -166,7 +169,8 @@ endif
 
 
 
-OBJS = $(SOURCE:.c=.o)
+OBJS = $(SOURCE:.c=.o) 
+OBJS_ASM = $(ASM_SRCS:.S=.o)
 OBJS_CPP = $(SOURCE_CPP:.cpp=.o)
 OBJS_S = $(S_SRCS:.s=.o)
 
@@ -175,6 +179,8 @@ OBJS_S = $(S_SRCS:.s=.o)
 OUT_OBJS=$(addprefix $(OUTPUT_DIR)/,$(OBJS))
 OUT_OBJS_CPP=$(addprefix $(OUTPUT_DIR)/,$(OBJS_CPP))
 OUT_OBJS_S=$(addprefix $(OUTPUT_DIR)/,$(OBJS_S))
+OUT_OBJS_ASM=$(addprefix $(OUTPUT_DIR)/,$(OBJS_ASM))
+
 OUT_HEXFILE=$(addprefix $(HEXFILE_DIR)/,$(OUTPUT_EXE))
 
 all: $(OUT_HEXFILE).hex $(OUT_HEXFILE).bin
@@ -192,10 +198,10 @@ all: $(OUT_HEXFILE).hex $(OUT_HEXFILE).bin
 	$(SIZE) $^
 	$(OBJCOPY) $^ -O binary $@
 
-$(OUT_HEXFILE).elf : $(OUT_OBJS) $(OUT_OBJS_CPP) $(OUT_OBJS_S) Makefile $(LDSCRIPT)
+$(OUT_HEXFILE).elf : $(OUT_OBJS) $(OUT_OBJS_CPP) $(OUT_OBJS_S) $(OUT_OBJS_ASM) Makefile $(LDSCRIPT)
 	@test -d $(@D) || mkdir -p $(@D)
 	@echo Linking $(OUTPUT_EXE).elf
-	@$(CPP) $(CXXFLAGS) $(OUT_OBJS_S) $(OUT_OBJS) $(OUT_OBJS_CPP) $(LIBS) $(LINKER_FLAGS)
+	@$(CPP) $(CXXFLAGS) $(OUT_OBJS_S) $(OUT_OBJS) $(OUT_OBJS_CPP) $(OUT_OBJS_ASM) $(LIBS) $(LINKER_FLAGS)
 
 $(OUT_OBJS): $(OUTPUT_DIR)/%.o : %.c Makefile
 	@test -d $(@D) || mkdir -p $(@D)
@@ -203,7 +209,14 @@ $(OUT_OBJS): $(OUTPUT_DIR)/%.o : %.c Makefile
 #	@echo $(CFLAGS)
 	@$(CC) -c $(CFLAGS) $< -o $@
 	@$(OBJDUMP) -d -S $@ > $@.lst
-
+	
+$(OUT_OBJS_ASM): $(OUTPUT_DIR)/%.o : %.S Makefile
+	@test -d $(@D) || mkdir -p $(@D)
+	@echo Assembling ${<}
+#	@echo $(CFLAGS)
+	@$(CC) -c $(CFLAGS) $< -o $@
+	@$(OBJDUMP) -d -S $@ > $@.lst
+	
 $(OUT_OBJS_CPP): $(OUTPUT_DIR)/%.o : %.cpp Makefile
 	@test -d $(@D) || mkdir -p $(@D)
 	@echo Compiling ${<}
