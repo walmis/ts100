@@ -260,7 +260,7 @@ static usbd_respond cdc_setconf (usbd_device *dev, uint8_t cfg) {
 }
 
 void cdc_init_usbd(void) {
-    usbd_init(&udev, &usbd_hw, CDC_EP0_SIZE, ubuf, sizeof(ubuf));
+    usbd_init(&udev, &usbd_devfs_asm, CDC_EP0_SIZE, ubuf, sizeof(ubuf));
     usbd_reg_config(&udev, cdc_setconf);
     usbd_reg_control(&udev, cdc_control);
     usbd_reg_descr(&udev, cdc_getdesc);

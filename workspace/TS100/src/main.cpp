@@ -801,6 +801,10 @@ void startGUITask(void const *argument) {
 	}
 }
 
+
+
+PIDState pid_state;
+
 /* StartPIDTask function */
 void startPIDTask(void const *argument) {
 	/*
@@ -815,8 +819,8 @@ void startPIDTask(void const *argument) {
 	 */
 	setTipPWM(0); // disable the output driver if the output is set to be off
 	osDelay(500);
-	int32_t integralCount = 0;
-	int32_t derivativeLastValue = 0;
+
+	int32_t lastTemp = 0;
 
 // REMEBER ^^^^ These constants are backwards
 // They act as dividers, so to 'increase' a P term, you make the number
@@ -829,6 +833,8 @@ void startPIDTask(void const *argument) {
 			//Wait a max of 50ms
 			//This is a call to block this thread until the ADC does its samples
 			uint16_t rawTemp = getTipRawTemp(1);  // get instantaneous reading
+			pid_state.rawTemp = rawTemp;
+			pid_state.setTemp = currentlyActiveTemperatureTarget;
 			if (currentlyActiveTemperatureTarget) {
 				// Compute the PID loop in here
 				// Because our values here are quite large for all measurements (0-16k ~=
@@ -839,43 +845,50 @@ void startPIDTask(void const *argument) {
 				if (currentlyActiveTemperatureTarget > ctoTipMeasurement(450)) {
 					currentlyActiveTemperatureTarget = ctoTipMeasurement(450);
 				}
+				
+				int32_t kP = systemSettings.PID_P;
+				int32_t kI = systemSettings.PID_I;
+				int32_t kD = systemSettings.PID_D;
 
 				int32_t rawTempError = currentlyActiveTemperatureTarget
 						- rawTemp;
-				int32_t ierror = (rawTempError
-						/ ((int32_t) systemSettings.PID_I));
-				integralCount += ierror;
-				if (integralCount > (itermMax / 2))
-					integralCount = itermMax / 2;  // prevent too much lead
-				else if (integralCount < -itermMax)
-					integralCount = itermMax;
+				int32_t ierror = (rawTempError / kI);
+				pid_state.I += ierror;
+				if (pid_state.I > (itermMax / 2))
+					pid_state.I = itermMax / 2;  // prevent too much lead
+				else if (pid_state.I < -itermMax)
+					pid_state.I = itermMax;
 
-				int32_t dInput = (rawTemp - derivativeLastValue);
+				int32_t dInput = (rawTemp - lastTemp);
 
 				/*Compute PID Output*/
-				int32_t output = (rawTempError
-						/ ((int32_t) systemSettings.PID_P));
-				if (((int32_t) systemSettings.PID_I))
-					output += integralCount;
-				if (((int32_t) systemSettings.PID_D))
-					output -= (dInput / ((int32_t) systemSettings.PID_D));
+				pid_state.P = (rawTempError / kP);
 
-				if (output > 100) {
-					output = 100;  // saturate
-				} else if (output < 0) {
-					output = 0;
+				if (kI) {
+					pid_state.output += pid_state.I;
+				}
+				
+				if (kD) {
+				    pid_state.D = (dInput / kD);
+					pid_state.output -= pid_state.D;
+				}
+
+				if (pid_state.output > 100) {
+					pid_state.output = 100;  // saturate
+				} else if (pid_state.output < 0) {
+					pid_state.output = 0;
 				}
 
 				/*if (currentlyActiveTemperatureTarget < rawTemp) {
 				 output = 0;
 				 }*/
-				setTipPWM(output);
-				derivativeLastValue = rawTemp;  // store for next loop
+				setTipPWM(pid_state.output);
+				lastTemp = rawTemp;  // store for next loop
 
 			} else {
 				setTipPWM(0); // disable the output driver if the output is set to be off
-				integralCount = 0;
-				derivativeLastValue = 0;
+				pid_state.I = 0;
+				lastTemp = 0;
 			}
 
 			HAL_IWDG_Refresh(&hiwdg);

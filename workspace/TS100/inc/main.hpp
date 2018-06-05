@@ -23,6 +23,17 @@ enum ButtonState {
  */
 };
 
+struct PIDState {
+    int P; //current P term
+    int I; //current I term
+    int D; //current D term
+    int rawTemp; //measured temp
+    int setTemp; //set temp
+    int output; //current output 0-100
+};
+
+extern PIDState pid_state; //stores current PID state
+
 ButtonState getButtonState();
 void waitForButtonPressOrTimeout(uint32_t timeout);
 #ifdef __cplusplus

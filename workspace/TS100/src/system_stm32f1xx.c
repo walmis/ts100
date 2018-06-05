@@ -77,6 +77,9 @@ void SystemInit (void)
   /* Disable all interrupts and clear pending bits  */
   RCC->CIR = 0x009F0000U;
 #endif /* STM32F105xC */
+
+ RCC->CR &= ~RCC_CR_HSITRIM_Msk;
+ RCC->CR |= 25<<RCC_CR_HSITRIM_Pos;
     
 #if defined(STM32F100xE) || defined(STM32F101xE) || defined(STM32F101xG) || defined(STM32F103xE) || defined(STM32F103xG)
   #ifdef DATA_IN_ExtSRAM
