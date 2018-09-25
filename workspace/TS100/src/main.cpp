@@ -36,8 +36,6 @@ void startPIDTask(void const *argument);
 void startMOVTask(void const *argument);
 // End FreeRTOS
 
-extern "C" void cdc_init_usbd(void);
-
 // Main sets up the hardware then hands over to the FreeRTOS kernel
 int main(void) {
 	/* Reset of all peripherals, Initializes the Flash interface and the Systick.
@@ -46,10 +44,6 @@ int main(void) {
 	Setup_HAL();  // Setup all the HAL objects
 	HAL_IWDG_Refresh(&hiwdg);
 	setTipPWM(0);
-	
-	cdc_init_usbd();
-
-	
 	lcd.initialize();   // start up the LCD
 	lcd.setFont(0);     // default to bigger font
 	//Testing for new weird board version
@@ -74,6 +68,7 @@ int main(void) {
 	HAL_IWDG_Refresh(&hiwdg);
 	restoreSettings();  // load the settings from flash
 	setCalibrationOffset(systemSettings.CalibrationOffset);
+	setTipType((enum TipType)systemSettings.tipType, systemSettings.customTipGain); //apply tip type selection
 	HAL_IWDG_Refresh(&hiwdg);
 
 	/* Create the thread(s) */
@@ -103,6 +98,9 @@ void printVoltage() {
 	lcd.printNumber(getInputVoltageX10(systemSettings.voltageDiv) % 10, 1);
 }
 void GUIDelay() {
+	//Called in all UI looping tasks,
+	//This limits the re-draw rate to the LCD and also lets the DMA run
+	//As the gui task can very easily fill this bus with transactions, which will prevent the movement detection from running
 	osDelay(50);
 }
 void gui_drawTipTemp(bool symbol) {
@@ -193,7 +191,7 @@ ButtonState getButtonState() {
 	return BUTTON_NONE;
 }
 
-static void waitForButtonPress() {
+ void waitForButtonPress() {
 	// we are just lazy and sleep until user confirms button press
 	// This also eats the button press event!
 	ButtonState buttons = getButtonState();
@@ -289,42 +287,24 @@ static void gui_solderingTempAdjust() {
 		case BUTTON_B_LONG:
 			if (xTaskGetTickCount() - autoRepeatTimer
 					+ autoRepeatAcceleration> PRESS_ACCEL_INTERVAL_MAX) {
-				if (!lcd.getRotation()) {
-					systemSettings.SolderingTemp += 10;  // add 10
-				} else {
-					systemSettings.SolderingTemp -= 10;  // sub 10
-				}
+				systemSettings.SolderingTemp -= 10;  // sub 10
 				autoRepeatTimer = xTaskGetTickCount();
-
 				autoRepeatAcceleration += PRESS_ACCEL_STEP;
 			}
 			break;
 		case BUTTON_F_LONG:
 			if (xTaskGetTickCount() - autoRepeatTimer
 					+ autoRepeatAcceleration> PRESS_ACCEL_INTERVAL_MAX) {
-				if (!lcd.getRotation()) {
-					systemSettings.SolderingTemp -= 10;
-				} else {
-					systemSettings.SolderingTemp += 10;
-				}
+				systemSettings.SolderingTemp += 10;
 				autoRepeatTimer = xTaskGetTickCount();
-
 				autoRepeatAcceleration += PRESS_ACCEL_STEP;
 			}
 			break;
 		case BUTTON_F_SHORT:
-			if (lcd.getRotation()) {
-				systemSettings.SolderingTemp += 10;  // add 10
-			} else {
-				systemSettings.SolderingTemp -= 10;  // sub 10
-			}
+			systemSettings.SolderingTemp += 10;  // add 10
 			break;
 		case BUTTON_B_SHORT:
-			if (!lcd.getRotation()) {
-				systemSettings.SolderingTemp += 10;  // add 10
-			} else {
-				systemSettings.SolderingTemp -= 10;  // sub 10
-			}
+			systemSettings.SolderingTemp -= 10;  // sub 10
 			break;
 		default:
 			break;
@@ -338,22 +318,23 @@ static void gui_solderingTempAdjust() {
 		if (systemSettings.temperatureInF) {
 			if (systemSettings.SolderingTemp > 850)
 				systemSettings.SolderingTemp = 850;
-		} else {
-			if (systemSettings.SolderingTemp > 450)
-				systemSettings.SolderingTemp = 450;
-		}
-
-		if (systemSettings.temperatureInF) {
 			if (systemSettings.SolderingTemp < 120)
 				systemSettings.SolderingTemp = 120;
 		} else {
+			if (systemSettings.SolderingTemp > 450)
+				systemSettings.SolderingTemp = 450;
 			if (systemSettings.SolderingTemp < 50)
 				systemSettings.SolderingTemp = 50;
 		}
 
 		if (xTaskGetTickCount() - lastChange > 200)
 			return;  // exit if user just doesn't press anything for a bit
-		lcd.drawChar('-');
+
+		if (lcd.getRotation())
+			lcd.drawChar('-');
+		else
+			lcd.drawChar('+');
+
 		lcd.drawChar(' ');
 		lcd.printNumber(systemSettings.SolderingTemp, 3);
 		if (systemSettings.temperatureInF)
@@ -361,7 +342,10 @@ static void gui_solderingTempAdjust() {
 		else
 			lcd.drawSymbol(1);
 		lcd.drawChar(' ');
-		lcd.drawChar('+');
+		if (lcd.getRotation())
+			lcd.drawChar('+');
+		else
+			lcd.drawChar('-');
 		lcd.refresh();
 		GUIDelay();
 	}
@@ -440,6 +424,25 @@ static int gui_SolderingSleepingMode() {
 	}
 	return 0;
 }
+
+static void display_countdown(int sleepThres) {
+	/*
+	 * Print seconds or minutes (if > 99 seconds) until sleep
+	 * mode is triggered.
+	 */
+	int lastEventTime =
+			lastButtonTime < lastMovementTime ?
+					lastMovementTime : lastButtonTime;
+	int downCount = sleepThres - xTaskGetTickCount() + lastEventTime;
+	if (downCount > 9900) {
+		lcd.printNumber(downCount / 6000 + 1, 2);
+		lcd.print("M");
+	} else {
+		lcd.printNumber(downCount / 100 + 1, 2);
+		lcd.print("S");
+	}
+}
+
 static void gui_solderingMode() {
 	/*
 	 * * Soldering (gui_solderingMode)
@@ -497,7 +500,7 @@ static void gui_solderingMode() {
 		lcd.setCursor(0, 0);
 		lcd.clearScreen();
 		lcd.setFont(0);
-		if (tipTemp > 16300) {
+		if (tipTemp > 32752) {
 			lcd.print(BadTipString);
 			lcd.refresh();
 			currentlyActiveTemperatureTarget = 0;
@@ -505,10 +508,16 @@ static void gui_solderingMode() {
 			return;
 		} else {
 			if (systemSettings.detailedSoldering) {
-				lcd.setFont(1);
-				lcd.print(SolderingAdvancedPowerPrompt);  //Power:
-				lcd.printNumber(getTipPWM(), 3);
-				lcd.print("%");
+				lcd.setFont(1);/*
+				 lcd.print(SolderingAdvancedPowerPrompt);  //Power:
+				 lcd.printNumber(getTipPWM(), 3);
+				 lcd.print("%");*/
+				lcd.printNumber(getTipRawTemp(0), 6);
+
+				if (systemSettings.sensitivity && systemSettings.SleepTime) {
+					lcd.print(" ");
+					display_countdown(sleepThres);
+				}
 
 				lcd.setCursor(0, 8);
 				lcd.print(SleepingTipAdvancedString);
@@ -587,14 +596,8 @@ static void gui_solderingMode() {
 }
 
 static const char *HEADERS[] = {
-	__DATE__,
-	"Heap: ",
-	"HWMG: ",
-	"HWMP: ",
-	"HWMM: ",
-	"Time: ",
-	"Move: "
-};
+__DATE__, "Heap: ", "HWMG: ", "HWMP: ", "HWMM: ", "Time: ", "Move: ", "Rtip: ",
+		"Ctip: ", "Vin :", "THan: " };
 
 void showVersion(void) {
 	uint8_t screen = 0;
@@ -626,6 +629,17 @@ void showVersion(void) {
 		case 6:
 			lcd.printNumber(lastMovementTime / 100, 5);
 			break;
+		case 7:
+			lcd.printNumber(getTipRawTemp(0), 6);
+			break;
+		case 8:
+			lcd.printNumber(tipMeasurementToC(getTipRawTemp(0)), 5);
+			break;
+		case 9:
+			printVoltage();
+			break;
+		case 10:
+			lcd.printNumber(getHandleTemperature(), 3);
 		default:
 			break;
 		}
@@ -636,18 +650,19 @@ void showVersion(void) {
 			return;
 		else if (b == BUTTON_F_SHORT) {
 			screen++;
-			screen = screen % 7;
+			screen = screen % 11;
 		}
 		GUIDelay();
 	}
 }
 
 /* StartGUITask function */
-void startGUITask(void const *argument) {
+void startGUITask(void const *argument __unused) {
 	i2cDev.FRToSInit();
 	uint8_t tempWarningState = 0;
 	bool buttonLockout = false;
 	bool tempOnDisplay = false;
+	getTipRawTemp(2);         //reset filter
 	lcd.setRotation(systemSettings.OrientationMode & 1);
 	uint32_t ticks = xTaskGetTickCount();
 	ticks += 400;  //4 seconds from now
@@ -801,12 +816,8 @@ void startGUITask(void const *argument) {
 	}
 }
 
-
-
-PIDState pid_state;
-
 /* StartPIDTask function */
-void startPIDTask(void const *argument) {
+void __attribute__ ((long_call, section (".data.ramfuncs"))) startPIDTask(void const *argument __unused) {
 	/*
 	 * We take the current tip temperature & evaluate the next step for the tip
 	 * control PWM
@@ -819,8 +830,8 @@ void startPIDTask(void const *argument) {
 	 */
 	setTipPWM(0); // disable the output driver if the output is set to be off
 	osDelay(500);
-
-	int32_t lastTemp = 0;
+	int32_t integralCount = 0;
+	int32_t derivativeLastValue = 0;
 
 // REMEBER ^^^^ These constants are backwards
 // They act as dividers, so to 'increase' a P term, you make the number
@@ -833,70 +844,72 @@ void startPIDTask(void const *argument) {
 			//Wait a max of 50ms
 			//This is a call to block this thread until the ADC does its samples
 			uint16_t rawTemp = getTipRawTemp(1);  // get instantaneous reading
-			pid_state.rawTemp = rawTemp;
-			pid_state.setTemp = currentlyActiveTemperatureTarget;
 			if (currentlyActiveTemperatureTarget) {
 				// Compute the PID loop in here
-				// Because our values here are quite large for all measurements (0-16k ~=
-				// 33 counts per C)
+				// Because our values here are quite large for all measurements (0-32k ~=
+				// 66 counts per C)
 				// P I & D are divisors, so inverse logic applies (beware)
 
 				// Cap the max set point to 450C
 				if (currentlyActiveTemperatureTarget > ctoTipMeasurement(450)) {
 					currentlyActiveTemperatureTarget = ctoTipMeasurement(450);
 				}
-				
-				int32_t kP = systemSettings.PID_P;
-				int32_t kI = systemSettings.PID_I;
-				int32_t kD = systemSettings.PID_D;
 
 				int32_t rawTempError = currentlyActiveTemperatureTarget
 						- rawTemp;
-				int32_t ierror = (rawTempError / kI);
-				pid_state.I += ierror;
-				if (pid_state.I > (itermMax / 2))
-					pid_state.I = itermMax / 2;  // prevent too much lead
-				else if (pid_state.I < -itermMax)
-					pid_state.I = itermMax;
 
-				int32_t dInput = (rawTemp - lastTemp);
+				int32_t ierror = (rawTempError
+						/ ((int32_t) systemSettings.PID_I));
+
+				integralCount += ierror;
+
+				if (integralCount > (itermMax / 2))
+					integralCount = itermMax / 2;  // prevent too much lead
+				else if (integralCount < -itermMax)
+					integralCount = itermMax;
+
+				int32_t dInput = (rawTemp - derivativeLastValue);
 
 				/*Compute PID Output*/
-				pid_state.P = (rawTempError / kP);
+				int32_t output = (rawTempError
+						/ ((int32_t) systemSettings.PID_P));
+				if (((int32_t) systemSettings.PID_I))
+					output += integralCount;
+				if (((int32_t) systemSettings.PID_D))
+					output -= (dInput / ((int32_t) systemSettings.PID_D));
 
-				if (kI) {
-					pid_state.output += pid_state.I;
-				}
-				
-				if (kD) {
-				    pid_state.D = (dInput / kD);
-					pid_state.output -= pid_state.D;
-				}
-
-				if (pid_state.output > 100) {
-					pid_state.output = 100;  // saturate
-				} else if (pid_state.output < 0) {
-					pid_state.output = 0;
+				if (output > 100) {
+					output = 100;  // saturate
+				} else if (output < 0) {
+					output = 0;
 				}
 
-				/*if (currentlyActiveTemperatureTarget < rawTemp) {
-				 output = 0;
-				 }*/
-				setTipPWM(pid_state.output);
-				lastTemp = rawTemp;  // store for next loop
+				if (currentlyActiveTemperatureTarget < rawTemp) {
+					output = 0;
+					integralCount = 0;
+					derivativeLastValue = 0;
+				}
+				setTipPWM(output);
+				derivativeLastValue = rawTemp;  // store for next loop
 
 			} else {
 				setTipPWM(0); // disable the output driver if the output is set to be off
-				pid_state.I = 0;
-				lastTemp = 0;
+				integralCount = 0;
+				derivativeLastValue = 0;
 			}
 
 			HAL_IWDG_Refresh(&hiwdg);
+		} else {
+			if (currentlyActiveTemperatureTarget == 0) {
+				setTipPWM(0); // disable the output driver if the output is set to be off
+				integralCount = 0;
+				derivativeLastValue = 0;
+			}
 		}
 	}
 }
 #define MOVFilter 8
-void startMOVTask(void const *argument) {
+void startMOVTask(void const *argument __unused) {
 	osDelay(250);  // wait for accelerometer to stabilize
 	lcd.setRotation(systemSettings.OrientationMode & 1);
 	lastMovementTime = 0;
@@ -904,8 +917,8 @@ void startMOVTask(void const *argument) {
 	int16_t datay[MOVFilter] = { 0 };
 	int16_t dataz[MOVFilter] = { 0 };
 	uint8_t currentPointer = 0;
-	int16_t tx, ty, tz;
-	int32_t avgx, avgy, avgz;
+	int16_t tx = 0, ty = 0, tz = 0;
+	int32_t avgx = 0, avgy = 0, avgz = 0;
 	if (systemSettings.sensitivity > 9)
 		systemSettings.sensitivity = 9;
 #if ACCELDEBUG
@@ -932,11 +945,8 @@ void startMOVTask(void const *argument) {
 		datay[currentPointer] = (int32_t) ty;
 		dataz[currentPointer] = (int32_t) tz;
 		currentPointer = (currentPointer + 1) % MOVFilter;
-#if ACCELDEBUG
 
-		// Debug for Accel
-
-		avgx = avgy = avgz = 0;
+		// calculate averages
 		for (uint8_t i = 0; i < MOVFilter; i++) {
 			avgx += datax[i];
 			avgy += datay[i];
@@ -945,38 +955,35 @@ void startMOVTask(void const *argument) {
 		avgx /= MOVFilter;
 		avgy /= MOVFilter;
 		avgz /= MOVFilter;
+
+		//Sum the deltas
+		int32_t error = (abs(avgx - tx) + abs(avgy - ty) + abs(avgz - tz));
+
+#if ACCELDEBUG
+		// Debug for Accel
+
 		lcd.setFont(1);
 		lcd.setCursor(0, 0);
 		lcd.printNumber(abs(avgx - (int32_t) tx), 5);
 		lcd.print(" ");
 		lcd.printNumber(abs(avgy - (int32_t) ty), 5);
-		if ((abs(avgx - tx) + abs(avgy - ty) + abs(avgz - tz)) > max)
-		max = (abs(avgx - tx) + abs(avgy - ty) + abs(avgz - tz));
+		if (error > max) {
+			max = (abs(avgx - tx) + abs(avgy - ty) + abs(avgz - tz));
+		}
 		lcd.setCursor(0, 8);
 		lcd.printNumber(max, 5);
 		lcd.print(" ");
 
 		lcd.printNumber((abs(avgx - tx) + abs(avgy - ty) + abs(avgz - tz)), 5);
 		lcd.refresh();
-		if (HAL_GPIO_ReadPin(KEY_A_GPIO_Port, KEY_A_Pin) == GPIO_PIN_RESET)
-		max = 0;
-#endif
-
-		// calculate averages
-		avgx = avgy = avgz = 0;
-		for (uint8_t i = 0; i < MOVFilter; i++) {
-			avgx += datax[i];
-			avgy += datay[i];
-			avgz += dataz[i];
+		if (HAL_GPIO_ReadPin(KEY_A_GPIO_Port, KEY_A_Pin) == GPIO_PIN_RESET) {
+			max = 0;
 		}
-		avgx /= MOVFilter;
-		avgy /= MOVFilter;
-		avgz /= MOVFilter;
+#endif
 
 		// So now we have averages, we want to look if these are different by more
 		// than the threshold
-		//Sum the deltas
-		int32_t error = (abs(avgx - tx) + abs(avgy - ty) + abs(avgz - tz));
+
 		// If error has occurred then we update the tick timer
 		if (error > threshold) {
 			lastMovementTime = xTaskGetTickCount();
@@ -1018,41 +1025,48 @@ bool showBootLogoIfavailable() {
 	return true;
 }
 
-void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef* hadc) {
+/*
+ * Catch the IRQ that says that the conversion is done on the temperature readings coming in
+ * Once these have come in we can unblock the PID so that it runs again
+ */
+void __attribute__ ((long_call, section (".data.ramfuncs"))) HAL_ADCEx_InjectedConvCpltCallback(
+		ADC_HandleTypeDef* hadc) {
 	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-
-	if (pidTaskNotification) {
-		/* Notify the task that the transmission is complete. */
-		vTaskNotifyGiveFromISR(pidTaskNotification, &xHigherPriorityTaskWoken);
-
-		/* If xHigherPriorityTaskWoken is now set to pdTRUE then a context switch
-		 should be performed to ensure the interrupt returns directly to the highest
-		 priority task.  The macro used for this purpose is dependent on the port in
-		 use and may be called portEND_SWITCHING_ISR(). */
-		portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+	if (hadc == &hadc1) {
+		if (pidTaskNotification) {
+			vTaskNotifyGiveFromISR(pidTaskNotification,
+					&xHigherPriorityTaskWoken);
+			portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+		}
 	}
 }
 
-void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c) {
+void __attribute__ ((long_call, section (".data.ramfuncs"))) HAL_I2C_MasterRxCpltCallback(
+		I2C_HandleTypeDef *hi2c __unused) {
 	i2cDev.CpltCallback();
 }
-void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c) {
+void __attribute__ ((long_call, section (".data.ramfuncs"))) HAL_I2C_MasterTxCpltCallback(
+		I2C_HandleTypeDef *hi2c __unused) {
 	i2cDev.CpltCallback();
 }
-void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef *hi2c) {
+void __attribute__ ((long_call, section (".data.ramfuncs"))) HAL_I2C_MemTxCpltCallback(
+		I2C_HandleTypeDef *hi2c __unused) {
 	i2cDev.CpltCallback();
 }
-void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c) {
+void __attribute__ ((long_call, section (".data.ramfuncs"))) HAL_I2C_ErrorCallback(
+		I2C_HandleTypeDef *hi2c __unused) {
 	i2cDev.CpltCallback();
 }
-void HAL_I2C_AbortCpltCallback(I2C_HandleTypeDef *hi2c) {
+void __attribute__ ((long_call, section (".data.ramfuncs"))) HAL_I2C_AbortCpltCallback(
+		I2C_HandleTypeDef *hi2c __unused) {
 	i2cDev.CpltCallback();
 }
-void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c) {
+void __attribute__ ((long_call, section (".data.ramfuncs"))) HAL_I2C_MemRxCpltCallback(
+		I2C_HandleTypeDef *hi2c __unused) {
 	i2cDev.CpltCallback();
 }
-void vApplicationStackOverflowHook( xTaskHandle *pxTask,
-		signed portCHAR *pcTaskName) {
+void vApplicationStackOverflowHook( xTaskHandle *pxTask __unused,
+		signed portCHAR *pcTaskName __unused) {
 //We dont have a good way to handle a stack overflow at this point in time
 	NVIC_SystemReset();
 
